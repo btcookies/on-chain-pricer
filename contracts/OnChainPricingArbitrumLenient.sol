@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
 pragma solidity 0.8.10;
 
-import {OnChainPricingMainnet} from "./OnChainPricingMainnet.sol";
+import {OnChainPricingArbitrum} from "./OnChainPricingArbitrum.sol";
 
 /// @title OnChainPricing
 /// @author Alex the Entreprenerd @ BadgerDAO
-/// @dev Mainnet Version of Price Quoter, hardcoded for more efficiency
+/// @dev Arbitrum Version of Price Quoter, hardcoded for more efficiency
 /// @notice To spin a variant, just change the constants and use the Component Functions at the end of the file
 /// @notice Instead of upgrading in the future, just point to a new implementation
 /// @notice This version has 5% extra slippage to allow further flexibility
 ///     if the manager abuses the check you should consider reverting back to a more rigorous pricer
-contract OnChainPricingMainnetLenient is OnChainPricingMainnet {
+contract OnChainPricingArbitrumLenient is OnChainPricingArbitrum {
 
     // === SLIPPAGE === //
     // Can change slippage within rational limits
@@ -25,9 +25,8 @@ contract OnChainPricingMainnetLenient is OnChainPricingMainnet {
     uint256 private constant SECONDS_PER_DAY = 86400;
 
     constructor(
-        address _uniV3Simulator, 
-        address _balancerV2Simulator
-    ) OnChainPricingMainnet(_uniV3Simulator, _balancerV2Simulator){
+        address _uniV3Simulator
+    ) OnChainPricingArbitrum(_uniV3Simulator){
         // Silence is golden
     }
 

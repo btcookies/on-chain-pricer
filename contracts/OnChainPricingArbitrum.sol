@@ -23,9 +23,12 @@ import "@chainlink/src/v0.8/Denominations.sol";
 enum SwapType { 
     CURVE, //0
     SWAPR, //1
-    UNIV3, //2
-    UNIV3WITHWETH, //3
-    PRICEFEED //4
+    SUSHI, //2
+    UNIV3, //3
+    UNIV3WITHWETH, //4
+    SWAPRWITHWETH, //5
+    SUSHIWITHWETH, //6
+    PRICEFEED //7
 }
 
 /// @title OnChainPricing
@@ -72,6 +75,10 @@ contract OnChainPricingArbitrum {
     address public constant SWAPR_ROUTER = 0x530476d5583724A89c8841eB6Da76E7Af4C0F17E;
     bytes32 public constant SWAPR_POOL_INITCODE = 0xd306a548755b9295ee49cc729e13ca4a45e00199bbd890fa146da43a50571776;
     address public constant SWAPR_FACTORY = 0x359F20Ad0F42D75a5077e65F30274cABe6f4F01a;
+    // Sushi
+    address public constant SUSHI_ROUTER = 0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506;
+    bytes32 public constant SUSHI_POOL_INITCODE = hex"e18a34eb0e04b04f7a0ac29a6e80748dca96319b42c54d679cb821dca90c6303";
+    address public constant SUSHI_FACTORY = 0xc35DADB65012eC5796536bD9864eD8773aBc74C4;
 
     // Curve / Doesn't revert on failure
     address public constant CURVE_ROUTER = 0xd78FC1F568411Aa87a8D7C4CDe638cde6E597a46; // Curve quote and swaps
@@ -93,8 +100,6 @@ contract OnChainPricingArbitrum {
     /// Remove immutable for coverage
     /// @dev helper library to simulate Uniswap V3 swap
     address public immutable uniV3Simulator;
-    /// @dev helper library to simulate Balancer V2 swap
-    address public immutable balancerV2Simulator;
 	
     /// @dev https://docs.chain.link/docs/feed-registry/
     /// NOTE: feed registry not on arbitrum, will return 0 for unsupported denominations
@@ -133,9 +138,8 @@ contract OnChainPricingArbitrum {
         return uint24(10000);
     }
 
-    constructor(address _uniV3Simulator, address _balancerV2Simulator){
+    constructor(address _uniV3Simulator){
         uniV3Simulator = _uniV3Simulator;
-        balancerV2Simulator = _balancerV2Simulator;
     }
 
     /// === API FUNCTIONS === ///
@@ -186,6 +190,11 @@ contract OnChainPricingArbitrum {
             return true;
         }
 
+        // Otherwise it's probably on Sushi
+        if(getUniPrice(SUSHI_ROUTER, tokenIn, tokenOut, amountIn) > 0) {
+            return true;
+        }
+
         // Curve at this time has great execution prices but low selection
         (, uint256 curveQuote) = getCurvePrice(CURVE_ROUTER, tokenIn, tokenOut, amountIn);
         if (curveQuote > 0){
@@ -219,7 +228,7 @@ contract OnChainPricingArbitrum {
     function findExecutableSwap(address tokenIn, address tokenOut, uint256 amountIn) public view virtual returns (Quote memory q) {
         FeedQuote memory _qFeed = _feedWithPossibleETHConnector(tokenIn, tokenOut, amountIn);	
 		
-        FindSwapQuery memory _query = FindSwapQuery(tokenIn, tokenOut, amountIn, WETH, (_qFeed.tokenInToETHType == SwapType.UNIV3? _qFeed.tokenInToETH : 0));	
+        FindSwapQuery memory _query = FindSwapQuery(tokenIn, tokenOut, amountIn, WETH, (_qFeed.tokenInToETHType == SwapType.UNIV3 ? _qFeed.tokenInToETH : 0));	
         q = _findOptimalSwap(_query);		
         
         require(q.amountOut >= (_qFeed.finalQuote * (MAX_BPS - feed_tolerance) / MAX_BPS), '!feedSlip');
@@ -243,7 +252,7 @@ contract OnChainPricingArbitrum {
         uint256 amountIn = _query.amountIn;
 		
         bool wethInvolved = (tokenIn == WETH || tokenOut == WETH);
-        uint256 length = wethInvolved ? 3 : 4; // Add length you need
+        uint256 length = wethInvolved ? 4 : 7; // Add length you need
 
         Quote[] memory quotes = new Quote[](length);
         bytes32[] memory dummyPools;
@@ -259,10 +268,14 @@ contract OnChainPricingArbitrum {
 
         quotes[1] = Quote(SwapType.SWAPR, getUniPrice(SWAPR_ROUTER, tokenIn, tokenOut, amountIn), dummyPools, dummyPoolFees);
 
-        quotes[2] = Quote(SwapType.UNIV3, getUniV3Price(tokenIn, amountIn, tokenOut), dummyPools, dummyPoolFees);
+        quotes[2] = Quote(SwapType.SUSHI, getUniPrice(SUSHI_ROUTER, tokenIn, tokenOut, amountIn), dummyPools, dummyPoolFees);
+
+        quotes[3] = Quote(SwapType.UNIV3, getUniV3Price(tokenIn, amountIn, tokenOut), dummyPools, dummyPoolFees);
 
         if (!wethInvolved){
-            quotes[3] = Quote(SwapType.UNIV3WITHWETH, (_useSinglePoolInUniV3(tokenIn, tokenOut) > 0 ? 0 : getUniV3PriceWithConnector(_query)), dummyPools, dummyPoolFees);
+            quotes[4] = Quote(SwapType.UNIV3WITHWETH, (_useSinglePoolInUniV3(tokenIn, tokenOut) > 0 ? 0 : getUniV3PriceWithConnector(_query)), dummyPools, dummyPoolFees);
+            quotes[5] = Quote(SwapType.SWAPRWITHWETH, getUniPriceWithConnector(_query, SwapType.SWAPR), dummyPools, dummyPoolFees);
+            quotes[6] = Quote(SwapType.SUSHIWITHWETH, getUniPriceWithConnector(_query, SwapType.SUSHI), dummyPools, dummyPoolFees);
         }
 
         // Because this is a generalized contract, it is best to just loop,
@@ -291,8 +304,8 @@ contract OnChainPricingArbitrum {
 
     /// @dev Given the address of the UniV2Like Router, the input amount, and the path, returns the quote for it
     function getUniPrice(address router, address tokenIn, address tokenOut, uint256 amountIn) public view returns (uint256) {
-        
-        (address _pool, address _token0, ) = pairForUniV2(SWAPR_FACTORY, tokenIn, tokenOut, SWAPR_POOL_INITCODE);
+        bool _swapr = (router == SWAPR_ROUTER);
+        (address _pool, address _token0, ) = pairForUniV2((_swapr ? SWAPR_FACTORY : SUSHI_FACTORY), tokenIn, tokenOut, (_swapr ? SWAPR_POOL_INITCODE : SUSHI_POOL_INITCODE));
         if (!_pool.isContract()) {
             return 0;
         }
@@ -302,6 +315,27 @@ contract OnChainPricingArbitrum {
         // Use dummy magic number as a quick-easy substitute for liquidity (to avoid one SLOAD) since we have pool reserve check in it
         bool _basicCheck = _checkPoolLiquidityAndBalances(1, (_zeroForOne ? _t0Balance : _t1Balance), amountIn);
         return _basicCheck ? getUniV2AmountOutAnalytically(amountIn, (_zeroForOne ? _t0Balance : _t1Balance), (_zeroForOne ? _t1Balance : _t0Balance)) : 0;
+    }
+
+    /// @dev Given the address of the input token & amount & the output token & connector token in between (input token ---> connector token ---> output token)
+    /// @return the quote for it
+    function getUniPriceWithConnector(FindSwapQuery memory _query, SwapType _type) public view returns (uint256) {
+        // Skip if there is a mainstrem direct swap or connector pools not exist
+        bool _swapr = (_type == SwapType.SWAPR);
+        address factory = (_swapr ? SWAPR_FACTORY : SUSHI_FACTORY);
+        bytes32 init_code = (_swapr ? SWAPR_POOL_INITCODE : SUSHI_POOL_INITCODE);
+        address router = (_swapr ? SWAPR_ROUTER : SUSHI_ROUTER);
+        bool _tokenInToConnectorPool = checkUniPoolsExistence(factory, _query.tokenIn, _query.connector, init_code);
+        if (!_tokenInToConnectorPool || !checkUniPoolsExistence(factory, _query.connector, _query.tokenOut, init_code)) {
+            return 0;
+        }
+		
+        uint256 connectorAmount = getUniPrice(router, _query.tokenIn, _query.connector, _query.amountIn);	
+        if (connectorAmount > 0) {	
+            return getUniPrice(router, _query.connector, _query.tokenOut, connectorAmount);
+        } else {
+            return 0;
+        }
     }
 	
     /// @dev reference https://etherscan.io/address/0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F#code#L122
@@ -326,6 +360,12 @@ contract OnChainPricingArbitrum {
             )
         );
         return (pair, token0, token1);
+    }
+
+    /// @dev tell if there exists some Uniswap-esque pool for given token pair
+    function checkUniPoolsExistence(address factory, address tokenIn, address tokenOut, bytes32 _initCode) public view returns (bool){	
+        (address pair, address token0, address token1) = pairForUniV2(factory, tokenIn, tokenOut, _initCode);
+        return pair.isContract();
     }
 	
     /// === UNIV3 === ///
